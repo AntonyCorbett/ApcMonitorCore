@@ -53,6 +53,14 @@ int main()
             const int index = MonitorService::FindMonitorIndex(monitors, monitors[0].Key, searchRect);
             std::wcout << L"Successfully found monitor at index: " << index << L"\n";
         }
+
+        // Example: Use custom display name format
+        if (!monitors.empty())
+        {
+            const auto customDisplayName = monitors[0].GetDisplayName(L"{FriendlyName} - {SerialNumber}");
+            std::wcout << L"Custom display name: " + customDisplayName;
+        }
+
     }
     catch (const std::exception& e) 
     {
