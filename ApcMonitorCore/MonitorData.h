@@ -3,8 +3,22 @@
 #include <string>
 #include "DisplayConfigData.h"
 
+/// <summary>
+/// Represents information about a display monitor, including its identity, geometry, and descriptive properties.
+/// </summary>
+/// <remarks>
+/// The Key property is derived from the SerialNumber if available; otherwise, it falls back to the DevicePath.
+///
+/// MonitorRect and WorkRect are in virtual screen coordinates. MonitorRect represents the full monitor area,
+/// while WorkRect represents the area available for application windows.
+///
+/// MonitorRect and WorkRect can be identical if there is no taskbar or docked windows.
+///
+/// Key is generally used to persist and identify monitors across sessions. MonitorRect can also be persisted
+/// and used as a fallback identifier, but it is less reliable due to potential changes in monitor arrangement.
+/// </remarks>
 struct MonitorData
-{
+{	
 	UINT Id = 0;
 	bool IsPrimary = false;
 	RECT MonitorRect{};
