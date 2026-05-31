@@ -10,6 +10,7 @@
 #include "MonitorService.h"
 #include "MonitorData.h"
 #include "DisplayConfigData.h"
+#include "EdidParser.h"
 
 namespace
 {
@@ -29,168 +30,6 @@ namespace
 
         return TRUE;
     }
-
-    std::wstring Trim(const std::wstring& s)
-    {
-        const size_t start = s.find_first_not_of(L" \t\r\n");
-        if (start == std::wstring::npos)
-        {
-            return L"";
-        }
-
-        const size_t end = s.find_last_not_of(L" \t\r\n");
-        return s.substr(start, end - start + 1);
-    }
-
-    bool IsLikelyValidSerial(const std::wstring& s)
-    {
-        const auto t = Trim(s);
-        if (t.empty())
-        {
-            return false;
-        }
-
-        if (t == L"00000000" || t == L"FFFFFFFF")
-        {
-            return false;
-        }
-
-        // Reject strings that are all identical characters or whitespace/punctuation only
-        bool hasAlnum = false;
-        for (const wchar_t c : t)
-        {
-            if (iswalnum(c))
-            {
-                hasAlnum = true;
-                break;
-            }
-        }
-
-        return hasAlnum;
-    }
-
-    // Extract ASCII string from an 18-byte descriptor with type tag at offset 3
-    std::wstring ExtractAsciiDescriptor(const BYTE* desc)
-    {
-        // bytes [5..17] are ASCII text terminated by 0x0A or 0x00
-        wchar_t wbuf[14] = {};
-        for (int j = 0; j < 13; ++j)
-        {
-            const BYTE ch = desc[5 + j];
-            if (ch == 0x0A || ch == 0x00)
-            {
-                break;
-            }
-
-            // Guard against non-printable
-            if (ch < 0x20 || ch > 0x7E)
-            {
-                wbuf[j] = L'?';
-                continue;
-            }
-
-            wbuf[j] = static_cast<wchar_t>(ch);
-        }
-
-        return Trim(std::wstring(wbuf));
-    }
-
-    std::wstring ParseEdidSerialFromBlock(const BYTE* edid128)
-    {
-        if (!edid128)
-        {
-            return L"";
-        }
-
-        constexpr size_t kDescriptorCount = 4u;
-
-        for (size_t i = 0; i < kDescriptorCount; ++i)
-        {
-            // Detailed timing/descriptor blocks at 0x36..0x7D (4 blocks * 18 bytes)
-            constexpr size_t base = 0x36;
-            constexpr size_t kDescriptorSize = 18u;
-
-            const BYTE* desc = edid128 + base + i * kDescriptorSize;
-            if (desc[0] == 0x00 && desc[1] == 0x00 && desc[2] == 0x00)
-            {
-                // 0xFF: Monitor Serial Number; 0xFE: ASCII String (sometimes used by vendors)
-                if (desc[3] == 0xFF)
-                {
-                    auto s = ExtractAsciiDescriptor(desc);
-                    if (IsLikelyValidSerial(s))
-                    {
-                        return s;
-                    }
-                }
-                else if (desc[3] == 0xFE)
-                {
-                    auto s = ExtractAsciiDescriptor(desc);
-                    if (IsLikelyValidSerial(s))
-                    {
-                        return s;
-                    }
-                }
-            }
-        }
-
-        return L"";
-    }
-
-    std::wstring ParseEdidSerial(const BYTE* edid, const DWORD size)
-    {
-        if (!edid || size < 128)
-        {
-            return L"";
-        }
-
-        // Try base block descriptors
-        auto s = ParseEdidSerialFromBlock(edid);
-        if (IsLikelyValidSerial(s))
-        {
-            return s;
-        }
-
-        // Try extension blocks if present — only blocks with base-EDID-style descriptors (tag 0x00)
-        const BYTE extCount = edid[0x7E];
-        for (int i = 0; i < extCount; ++i)
-        {
-            const size_t off = 128ull * (i + 1);
-            if (off + 128 > size)
-            {
-                continue;
-            }
-
-            // Extension block tag is the first byte. Only tag 0x00 uses the same
-            // 18-byte descriptor layout at 0x36 as the base block. CEA-861 (0x02)
-            // and others have completely different structures.
-            if (edid[off] != 0x00)
-            {
-                continue;
-            }
-
-            auto se = ParseEdidSerialFromBlock(edid + off);
-            if (IsLikelyValidSerial(se))
-            {
-                return se;
-            }
-        }
-
-        // Fallback: 4-byte serial at bytes 12..15 (often 0) rendered hex
-        if (size >= 16)
-        {
-            DWORD ser = 0;
-            memcpy(&ser, edid + 12, sizeof(DWORD));
-            if (ser != 0 && ser != 0xFFFFFFFF)
-            {
-                wchar_t wbuf[16];
-                (void)swprintf_s(wbuf, L"%08X", ser);
-                return std::wstring{ wbuf };
-            }
-        }
-
-        return L"";
-    }
-
 
     /// <summary>
     /// Describes the position of a monitor RECT relative to the primary monitor's RECT
@@ -426,8 +265,8 @@ std::wstring MonitorService::TryGetMonitorSerialFromDevicePath(const std::wstrin
                         std::vector<BYTE> edid(size);
                         if (RegQueryValueExW(hKey, L"EDID", nullptr, &type, edid.data(), &size) == ERROR_SUCCESS)
                         {
-                            const auto parsed = ParseEdidSerial(edid.data(), size);
-                            if (IsLikelyValidSerial(parsed))
+                            const auto parsed = Edid::ParseSerial(edid.data(), size);
+                            if (Edid::IsLikelyValidSerial(parsed))
                             {
                                 serial = parsed;
                             }

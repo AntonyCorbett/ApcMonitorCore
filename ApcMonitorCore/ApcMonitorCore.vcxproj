@@ -148,11 +148,13 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="DisplayConfigData.h" />
+    <ClInclude Include="EdidParser.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="MonitorData.h" />
     <ClInclude Include="MonitorService.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="EdidParser.cpp" />
     <ClCompile Include="MonitorData.cpp" />
     <ClCompile Include="MonitorService.cpp" />
   </ItemGroup>

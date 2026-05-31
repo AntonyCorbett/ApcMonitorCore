@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <RunConfiguration>
+    <TargetPlatform>x64</TargetPlatform>
+    <ResultsDirectory>.\TestResults</ResultsDirectory>
+    <!-- Required for VS 2026: CrossPlatEngine doesn't auto-scan the C++ adapter directory.
+         If VS is installed elsewhere, update this path accordingly. -->
+    <TestAdaptersPaths>C:\Program Files\Microsoft Visual Studio\18\Professional\Common7\IDE\Extensions\TestPlatform\Extensions\Cpp</TestAdaptersPaths>
+    <!-- DotnetTestHostManager is always used in VS 2026 (even for native C++ DLLs) because
+         adapters are selected after testhost start. Setting .NETFramework causes it to use
+         testhost.exe from the VS TestPlatform directory (which exists). Without this, it
+         defaults to .NETCore and looks for a self-contained testhost in the test output
+         directory, which doesn't exist. -->
+    <TargetFrameworkVersion>.NETFramework,Version=v4.0</TargetFrameworkVersion>
+  </RunConfiguration>
+</RunSettings>

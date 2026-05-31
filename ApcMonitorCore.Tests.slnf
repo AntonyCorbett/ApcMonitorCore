@@ -1,0 +1,9 @@
+{
+  "solution": {
+    "path": "ApcMonitorCore.sln",
+    "projects": [
+      "ApcMonitorCore\\ApcMonitorCore.vcxproj",
+      "ApcMonitorCore.Tests\\ApcMonitorCore.Tests.vcxproj"
+    ]
+  }
+}
