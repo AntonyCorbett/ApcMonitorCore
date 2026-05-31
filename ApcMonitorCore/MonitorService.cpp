@@ -150,18 +150,28 @@ namespace
             return s;
         }
 
-        // Try extension blocks if present (scan each 128-byte block similarly)
+        // Try extension blocks if present — only blocks with base-EDID-style descriptors (tag 0x00)
         const BYTE extCount = edid[0x7E];
         for (int i = 0; i < extCount; ++i)
         {
             const size_t off = 128ull * (i + 1);
-            if (off + 128 <= size)
+            if (off + 128 > size)
             {
-                auto se = ParseEdidSerialFromBlock(edid + off);
-                if (IsLikelyValidSerial(se))
-                {
-                    return se;
-                }
+                continue;
+            }
+
+            // Extension block tag is the first byte. Only tag 0x00 uses the same
+            // 18-byte descriptor layout at 0x36 as the base block. CEA-861 (0x02)
+            // and others have completely different structures.
+            if (edid[off] != 0x00)
+            {
+                continue;
+            }
+
+            auto se = ParseEdidSerialFromBlock(edid + off);
+            if (IsLikelyValidSerial(se))
+            {
+                return se;
             }
         }
 
@@ -181,8 +191,6 @@ namespace
         return L"";
     }
 
-    // Simple cache to avoid repeated registry reads
-    std::unordered_map<std::wstring, std::wstring> serialCache;
 
     /// <summary>
     /// Describes the position of a monitor RECT relative to the primary monitor's RECT
@@ -222,7 +230,6 @@ namespace
     }
 }
 
-// ReSharper disable once CppMemberFunctionMayBeStatic
 std::vector<MonitorData> MonitorService::GetMonitorsData() const
 {
     std::vector<MonitorData> returnData;
@@ -230,17 +237,25 @@ std::vector<MonitorData> MonitorService::GetMonitorsData() const
     auto monitorInfo = GetMonitorsInfo();
     auto displayInfo = GetDisplayConfigInfo();
 
-    if (monitorInfo.size() != displayInfo.size())
-    {
-        throw std::runtime_error("Monitor and display config data size mismatch");
-    }
-
-    // First pass: create all MonitorData objects
+    // First pass: create MonitorData objects matched by GDI device name.
+    // EnumDisplayMonitors (GDI) and QueryDisplayConfig (CCD) enumerate in
+    // independent orders, so pairing by index is not reliable.
     returnData.reserve(monitorInfo.size());
-    for (size_t i = 0; i < monitorInfo.size(); ++i)
+    for (const auto& info : monitorInfo)
     {
-        const auto serial = TryGetMonitorSerialFromDevicePath(displayInfo[i].DevicePath);
-        returnData.emplace_back(monitorInfo[i], displayInfo[i], serial);
+        const auto it = std::ranges::find_if(displayInfo,
+            [&](const DisplayConfigData& d)
+            {
+                return _wcsicmp(d.GdiDeviceName.c_str(), info.szDevice) == 0;
+            });
+
+        if (it == displayInfo.end())
+        {
+            continue; // no matching display config entry — skip this monitor
+        }
+
+        const auto serial = TryGetMonitorSerialFromDevicePath(it->DevicePath);
+        returnData.emplace_back(info, *it, serial);
     }
 
     // Second pass: determine relative positions
@@ -334,27 +349,44 @@ std::vector<DisplayConfigData> MonitorService::GetDisplayConfigInfo()
             throw std::runtime_error("Failed to get monitor friendly name");
         }
 
+        // Retrieve the GDI source device name (e.g. "\\.\DISPLAY1") so we can
+        // match this CCD path against the MONITORINFOEX.szDevice from GDI.
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME srcName{};
+        srcName.header.adapterId = path.sourceInfo.adapterId;
+        srcName.header.id = path.sourceInfo.id;
+        srcName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        srcName.header.size = sizeof(srcName);
+
+        std::wstring gdiDeviceName;
+        if (DisplayConfigGetDeviceInfo(&srcName.header) == ERROR_SUCCESS)
+        {
+            gdiDeviceName = srcName.viewGdiDeviceName;
+        }
+
         returnData.emplace_back(
             path.targetInfo.id,
             targetName.flags.friendlyNameFromEdid ? targetName.monitorFriendlyDeviceName : L"Unknown",
-            targetName.monitorDevicePath);
+            targetName.monitorDevicePath,
+            gdiDeviceName);
     }
 
     return returnData;
 }
 
-std::wstring MonitorService::TryGetMonitorSerialFromDevicePath(const std::wstring& devicePath)
+std::wstring MonitorService::TryGetMonitorSerialFromDevicePath(const std::wstring& devicePath) const
 {
     if (devicePath.empty())
     {
         return L"";
     }
 
-    // Cached?
-    const auto it = serialCache.find(devicePath);
-    if (it != serialCache.end())
     {
-        return it->second;
+        std::lock_guard lock(m_cacheMutex);
+        const auto it = m_serialCache.find(devicePath);
+        if (it != m_serialCache.end())
+        {
+            return it->second;
+        }
     }
 
     const HDEVINFO hSet = SetupDiCreateDeviceInfoList(nullptr, nullptr);
@@ -371,35 +403,39 @@ std::wstring MonitorService::TryGetMonitorSerialFromDevicePath(const std::wstrin
     {
         DWORD required = 0;
         SetupDiGetDeviceInterfaceDetailW(hSet, &ifData, nullptr, 0, &required, nullptr);
-        std::vector<BYTE> buf(required);
-        auto* detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(buf.data());
-        detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
-        SP_DEVINFO_DATA devInfo{};
-        devInfo.cbSize = sizeof(SP_DEVINFO_DATA);
 
-        if (SetupDiGetDeviceInterfaceDetailW(hSet, &ifData, detail, required, nullptr, &devInfo))
+        if (required > 0)
         {
-            // Device Parameters holds EDID for most monitors
-            const HKEY hKey = SetupDiOpenDevRegKey(hSet, &devInfo, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_READ);
-            if (hKey && hKey != INVALID_HANDLE_VALUE)
+            std::vector<BYTE> buf(required);
+            auto* detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(buf.data());
+            detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
+            SP_DEVINFO_DATA devInfo{};
+            devInfo.cbSize = sizeof(SP_DEVINFO_DATA);
+
+            if (SetupDiGetDeviceInterfaceDetailW(hSet, &ifData, detail, required, nullptr, &devInfo))
             {
-                DWORD type = 0;
-                DWORD size = 0;
-                if (RegQueryValueExW(hKey, L"EDID", nullptr, &type, nullptr, &size) == ERROR_SUCCESS &&
-                    type == REG_BINARY && size > 0)
+                // Device Parameters holds EDID for most monitors
+                const HKEY hKey = SetupDiOpenDevRegKey(hSet, &devInfo, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_READ);
+                if (hKey && hKey != INVALID_HANDLE_VALUE)
                 {
-                    std::vector<BYTE> edid(size);
-                    if (RegQueryValueExW(hKey, L"EDID", nullptr, &type, edid.data(), &size) == ERROR_SUCCESS)
+                    DWORD type = 0;
+                    DWORD size = 0;
+                    if (RegQueryValueExW(hKey, L"EDID", nullptr, &type, nullptr, &size) == ERROR_SUCCESS &&
+                        type == REG_BINARY && size > 0)
                     {
-                        const auto parsed = ParseEdidSerial(edid.data(), size);
-                        if (IsLikelyValidSerial(parsed))
+                        std::vector<BYTE> edid(size);
+                        if (RegQueryValueExW(hKey, L"EDID", nullptr, &type, edid.data(), &size) == ERROR_SUCCESS)
                         {
-                            serial = parsed;
+                            const auto parsed = ParseEdidSerial(edid.data(), size);
+                            if (IsLikelyValidSerial(parsed))
+                            {
+                                serial = parsed;
+                            }
                         }
                     }
-                }
 
-                RegCloseKey(hKey);
+                    RegCloseKey(hKey);
+                }
             }
         }
     }
@@ -407,7 +443,10 @@ std::wstring MonitorService::TryGetMonitorSerialFromDevicePath(const std::wstrin
     SetupDiDestroyDeviceInfoList(hSet);
 
     // Cache even empty to avoid repeated attempts
-    serialCache[devicePath] = serial;
+    {
+        std::lock_guard lock(m_cacheMutex);
+        m_serialCache[devicePath] = serial;
+    }
     return serial;
 }
 
@@ -427,7 +466,7 @@ int MonitorService::FindMonitorIndex(const std::vector<MonitorData>& monitors, c
     }
 
     // Legacy fallback using persisted RECT
-    if (rect.right > 0) // Basic check for a non-empty rect
+    if (!IsRectEmpty(&rect))
     {
         int index = 0;
         for (const auto& monitor : monitors)

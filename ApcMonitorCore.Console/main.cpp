@@ -17,7 +17,7 @@ int main()
     try 
     {
         // Create an instance of MonitorService
-        constexpr MonitorService service;
+        const MonitorService service;
 
         // Get monitor data
         const auto monitors = service.GetMonitorsData();

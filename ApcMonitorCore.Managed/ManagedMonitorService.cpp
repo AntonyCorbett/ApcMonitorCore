@@ -99,19 +99,31 @@ namespace ApcMonitorCore {
         }
 
         String^ ManagedMonitorData::GetDisplayName(String^ format) {
-            // Simple implementation - you can expand this
             if (String::IsNullOrEmpty(format)) {
-                return FriendlyName + " (" + RelativePosition + ")";
+                format = "{FriendlyName} ({Position})";
             }
 
             String^ result = format;
-            result = result->Replace("{FriendlyName}", FriendlyName);
-            result = result->Replace("{Position}", RelativePosition);
-            result = result->Replace("{SerialNumber}", SerialNumber);
-            result = result->Replace("{Key}", Key);
-            result = result->Replace("{DeviceName}", DeviceName);
+            result = result->Replace("{FriendlyName}", FriendlyName != nullptr ? FriendlyName : "");
+            result = result->Replace("{Position}",     RelativePosition != nullptr ? RelativePosition : "");
+            result = result->Replace("{SerialNumber}", SerialNumber != nullptr ? SerialNumber : "");
+            result = result->Replace("{Key}",          Key != nullptr ? Key : "");
+            result = result->Replace("{DeviceName}",   DeviceName != nullptr ? DeviceName : "");
 
-            return result;
+            if (result->Contains("{Rect}")) {
+                auto r = MonitorRect;
+                result = result->Replace("{Rect}",
+                    String::Format("{0},{1},{2},{3}", r.Left, r.Top, r.Right, r.Bottom));
+            }
+
+            if (result->Contains("{Size}")) {
+                result = result->Replace("{Size}",
+                    String::Format("{0}x{1}", MonitorRect.Width, MonitorRect.Height));
+            }
+
+            result = result->Replace(" ()", "")->Replace(" []", "")->Replace(" <>", "");
+
+            return result->TrimEnd();
         }
     }
 }
